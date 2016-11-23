@@ -513,7 +513,7 @@ class Pod(Resource):
             # Not including this one for now as the message is not useful
             # "BackOff": "BackOffPullImage",
             # FailedScheduling relates limits
-            # "FailedScheduling": "FailedScheduling",
+            "FailedScheduling": "FailedScheduling",
         }
 
         # Nicer error than from the event
@@ -575,7 +575,7 @@ class Pod(Resource):
 
         return 0
 
-    def _handle_pending_pods(self, namespace, labels, insufficient_resource_timeout):
+    def _handle_pending_pods(self, namespace, labels, insufficient_resource_timeout=0):
         """
         Detects if any pod is in the starting phases and handles
         any potential issues around that, and increases timeouts
@@ -584,6 +584,8 @@ class Pod(Resource):
         timeout = 0
         pods = self.get(namespace, labels=labels).json()
         for pod in pods['items']:
+            pod_addition_timeout = 0
+
             # only care about pods that are not starting or in the starting phases
             if pod['status']['phase'] not in ['Pending', 'ContainerCreating']:
                 continue
@@ -592,18 +594,21 @@ class Pod(Resource):
             reason, message = self.pending_status(pod)
             # If pulling an image is taking long then increase the timeout
             if reason == 'Pulling':
-                timeout += self._handle_long_image_pulling(pod, reason)
+                pod_addition_timeout += self._handle_long_image_pulling(pod, reason)
             elif reason == 'Pending':
                 for event in self.events(pod):
                     if event['reason'] == 'FailedScheduling' and \
                         ('Insufficient cpu' in event['message'] or
                             'Insufficient memory' in event['message']):
-                        timeout += self._handle_insufficient_resource(
+                        pod_addition_timeout += self._handle_insufficient_resource(
                             insufficient_resource_timeout)
                         break
 
             # handle errors and bubble up if need be
-            self._handle_pod_errors(pod, reason, message)
+            if pod_addition_timeout == 0:
+                self._handle_pod_errors(pod, reason, message)
+
+            timeout += pod_addition_timeout
 
         return timeout
 
@@ -670,7 +675,7 @@ class Pod(Resource):
         waited = 0
         while waited < timeout:
             # figure out if there are any pending pod issues
-            additional_timeout = self._handle_pending_pods(namespace, labels, 0)
+            additional_timeout = self._handle_pending_pods(namespace, labels)
             if additional_timeout:
                 timeout += additional_timeout
                 # add 10 minutes to timeout to allow a pull image operation to finish
