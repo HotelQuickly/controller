@@ -526,6 +526,11 @@ class Pod(Resource):
         if reason in container_errors:
             for event in self.events(pod):
                 if event['reason'] in event_errors.keys():
+                    a = event['reason'] != 'FailedScheduling' and \
+                        not ('Insufficient cpu' in event['message'] or
+                             'Insufficient memory' in event['message']) and \
+                        insufficient_resource_timeout > 0
+                    self.log('jim!!!', '%s %s %d %r' % (event['reason'], event['message'], insufficient_resource_timeout, a))  # noqa
                     # don't terminate on FailedScheduling Insufficient cpu,memory immediately
                     # if insufficient_resource_timeout is defined
                     if event['reason'] != 'FailedScheduling' and \
