@@ -490,7 +490,7 @@ class Pod(Resource):
         events['items'].sort(key=lambda x: x['lastTimestamp'])
         return events['items']
 
-    def _handle_pod_errors(self, pod, reason, message):
+    def _handle_pod_errors(self, pod, reason, message, insufficient_resource_timeout=0):
         """
         Handle potential pod errors based on the Pending
         reason passed into the function
@@ -526,11 +526,17 @@ class Pod(Resource):
         if reason in container_errors:
             for event in self.events(pod):
                 if event['reason'] in event_errors.keys():
-                    # only show a given error once
-                    event_errors.pop(event['reason'])
-                    # strip out whitespaces on either side
-                    message = "\n".join([x.strip() for x in event['message'].split("\n")])
-                    messages.append(message)
+                    # don't terminate on FailedScheduling Insufficient cpu,memory immediately
+                    # if insufficient_resource_timeout is defined
+                    if event['reason'] != 'FailedScheduling' and \
+                        not ('Insufficient cpu' in event['message'] or
+                             'Insufficient memory' in event['message']) and \
+                            insufficient_resource_timeout > 0:
+                        # only show a given error once
+                        event_errors.pop(event['reason'])
+                        # strip out whitespaces on either side
+                        message = "\n".join([x.strip() for x in event['message'].split("\n")])
+                        messages.append(message)
 
         if messages:
             raise KubeException("\n".join(messages))
@@ -584,8 +590,6 @@ class Pod(Resource):
         timeout = 0
         pods = self.get(namespace, labels=labels).json()
         for pod in pods['items']:
-            pod_addition_timeout = 0
-
             # only care about pods that are not starting or in the starting phases
             if pod['status']['phase'] not in ['Pending', 'ContainerCreating']:
                 continue
@@ -594,21 +598,18 @@ class Pod(Resource):
             reason, message = self.pending_status(pod)
             # If pulling an image is taking long then increase the timeout
             if reason == 'Pulling':
-                pod_addition_timeout += self._handle_long_image_pulling(pod, reason)
+                timeout += self._handle_long_image_pulling(pod, reason)
             elif reason == 'Pending':
                 for event in self.events(pod):
                     if event['reason'] == 'FailedScheduling' and \
                         ('Insufficient cpu' in event['message'] or
                             'Insufficient memory' in event['message']):
-                        pod_addition_timeout += self._handle_insufficient_resource(
+                        timeout += self._handle_insufficient_resource(
                             insufficient_resource_timeout)
                         break
 
             # handle errors and bubble up if need be
-            if pod_addition_timeout == 0:
-                self._handle_pod_errors(pod, reason, message)
-
-            timeout += pod_addition_timeout
+            self._handle_pod_errors(pod, reason, message, insufficient_resource_timeout)
 
         return timeout
 
